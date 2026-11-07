@@ -91,7 +91,7 @@ MAC: 00:0c:43:26:60:00
 Both managed and monitor interfaces share the same MAC address (they are virtual interfaces on the same physical radio).
 
 Screenshot of monitor mode active alongside WiFi connection:  
-![Monitor mode](screenshots/monitor_mode.png)
+
 
 ### Bluetooth
 ```
