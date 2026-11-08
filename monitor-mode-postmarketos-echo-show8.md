@@ -1,329 +1,145 @@
-# WiFi Monitor Mode on Amazon Echo Show 8 (2nd Gen) running postmarketOS
+# postmarketOS on Amazon Echo Show 8 (2nd Gen)
 
-> **Device:** Amazon Echo Show 8 2nd Gen (codename `athena` / `kaeru`)  
-> **SoC:** MediaTek MT8183 (8× Cortex-A53)  
-> **OS:** postmarketOS (Alpine Linux, Phosh/GTK4)  
-> **Kernel:** 6.18.56-techo5-athena  
-> **WiFi chip:** MediaTek MT7921 (supports concurrent managed + monitor interfaces)
+> **Device:** Amazon Echo Show 8 2nd Gen · codename `athena` / `kaeru`  
+> **SoC:** MediaTek MT8183 · **OS:** postmarketOS edge (Alpine Linux)  
+> **Kernel:** 6.18.56-techo5-athena · **UI:** Phosh (Wayland/GTK4)
 
-For full hardware compatibility details see **[hardware-compatibility.md](hardware-compatibility.md)**.
-
-![Desktop running postmarketOS on Echo Show 8](screenshots/desktop.png)
-
-This guide documents how to:
-1. Access the device via USB serial console (no password needed)
-2. Enable passwordless SSH over USB networking
-3. Create a `mon0` monitor-mode interface without dropping the WiFi connection
-4. Make monitor mode persistent across reboots
-5. Fix the duplicate launcher UI (echo-launcher vs echo-taskbar)
+This repository documents the process of running postmarketOS on the Amazon Echo Show 8 2nd Generation, including setup guides, hardware compatibility status, and scripts to control the device from a Windows host over USB.
 
 ---
 
-## Prerequisites
+## Contents
 
-### Hardware
-- Amazon Echo Show 8 2nd Gen with postmarketOS already installed  
-  (use the [saiyaku-athena](https://github.com/R0rt1z2/saiyaku) tool to flash it)
-- USB-C cable
+| File | Description |
+|------|-------------|
+| [hardware-compatibility.md](hardware-compatibility.md) | What works, what doesn't, known issues |
+| [monitor-mode-postmarketos-echo-show8.md](monitor-mode-postmarketos-echo-show8.md) | Full guide: USB serial access, SSH setup, WiFi monitor mode + persistence |
+| [screenshots/](screenshots/) | Device screenshots |
 
-### Software (Windows host)
-- Python 3.x
-- pyserial: `pip install pyserial`
-- OpenSSH client (built into Windows 10+)
 
-### How the USB gadget works
+## Quick Start
 
-postmarketOS creates a Linux USB composite gadget on the device with two interfaces:
+### Flash postmarketOS
 
-| Interface | Windows driver | Function |
-|-----------|---------------|----------|
-| MI_00 — CDC-ACM | `usbser.sys` (built-in) | Serial console, auto-login as root on `ttyGS0` → **COM9** |
-| MI_02 — CDC-ECM | CDC-ECM / RNDIS driver | USB network adapter: device `172.16.42.1`, host `172.16.42.2` |
+Use the official [saiyaku-athena](https://xdaforums.com/t/unlock-root-twrp-unbrick-amazon-echo-show-8-2nd-gen-2021-athena.4804958/) tool to flash postmarketOS onto the device via MTK Meta mode.
 
-The CDC-ACM serial port (COM9) works out of the box on Windows with no driver install.  
-The CDC-ECM network interface needs a driver; install `usb_driver.inf` from the postmarketOS driver package.
+### Connect via USB (Windows)
 
----
+Plug the device in via USB-C. It exposes a composite USB gadget:
 
-## 1. USB Serial Access
+| Interface | Windows port | Function |
+|-----------|-------------|----------|
+| CDC-ACM serial | COM9 | Auto-login root shell at 115200 baud |
+| CDC-ECM network | RNDIS adapter | USB network — device at `172.16.42.1` |
 
-The device exposes an auto-login root shell over the serial port. You can send commands to it from Windows using Python + pyserial.
+The serial port (COM9) works with the built-in Windows `usbser.sys` driver — no install needed.
 
-### `serial_cmd.py` — run a single command
+### Run a command over serial (Python)
 
 ```python
+# serial_cmd.py — requires: pip install pyserial
 import serial, sys, time, random, re
 
-PORT = "COM9"
-BAUD = 115200
-
-cmd = sys.argv[1] if len(sys.argv) > 1 else "id"
-wait = float(sys.argv[2]) if len(sys.argv) > 2 else 10
+ser = serial.Serial("COM9", 115200, timeout=0.3)
+time.sleep(0.5)
+while ser.in_waiting: ser.read(ser.in_waiting); time.sleep(0.1)
 
 tag = str(random.randint(100000, 999999))
-marker = ("DONE" + tag).encode()
-
-ser = serial.Serial(PORT, BAUD, timeout=0.3)
-time.sleep(0.5)
-while ser.in_waiting:
-    ser.read(ser.in_waiting)
-    time.sleep(0.1)
-
-payload = ("stty -echo 2>/dev/null; " + cmd + "; echo DO''NE" + tag + "\r\n").encode()
-ser.write(payload)
-
-out = b""
-t = time.time()
-while time.time() - t < wait:
-    chunk = ser.read(256)
-    if chunk:
-        out += chunk
-    if marker in out:
-        break
-
-ser.close()
-
-s = out.decode(errors="replace")
-s = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", s)
-s = re.sub(r"\r\n", "\n", s)
-s = s.split("DONE" + tag)[0]
-lines = s.splitlines()
-print("\n".join(lines))
-```
-
-**Usage:**
-```
-python serial_cmd.py "uname -a"
-python serial_cmd.py "ip addr show" 15
-```
-
-### `run_fix.py` — run a multi-line shell script
-
-```python
-import serial, sys, time, random, re
-
-PORT = "COM9"
-BAUD = 115200
-
-with open(sys.argv[1], 'r') as f:
-    script = f.read()
-
-tag = str(random.randint(100000, 999999))
-marker = ("DONE" + tag).encode()
-
-ser = serial.Serial(PORT, BAUD, timeout=0.3)
-time.sleep(0.5)
-while ser.in_waiting:
-    ser.read(ser.in_waiting)
-    time.sleep(0.1)
-
-cmd = "sh -s <<'SCRIPT'\n" + script + "\nSCRIPT\necho DO''NE" + tag + "\n"
+cmd = f"stty -echo 2>/dev/null; {sys.argv[1]}; echo DO''NE{tag}\r\n"
 ser.write(cmd.encode())
 
 out = b""
 t = time.time()
-wait = float(sys.argv[2]) if len(sys.argv) > 2 else 30
-while time.time() - t < wait:
+while time.time() - t < 10:
     chunk = ser.read(256)
-    if chunk:
-        out += chunk
-    if marker in out:
-        break
-
+    if chunk: out += chunk
+    if ("DONE" + tag).encode() in out: break
 ser.close()
 
 s = out.decode(errors="replace")
 s = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", s)
-s = re.sub(r"\r\n", "\n", s)
-s = s.split("DONE" + tag)[0]
-print(s)
+print(s.split("DONE" + tag)[0].strip())
 ```
 
-**Usage:**
+```bash
+python serial_cmd.py "uname -a"
 ```
-python run_fix.py my_script.sh 30
-```
 
----
-
-## 2. Enable Passwordless SSH
-
-postmarketOS ships OpenSSH with `PermitRootLogin prohibit-password` by default, which blocks login without a key even if the root password is empty.
-
-### `fix_ssh.sh`
+### Enable SSH (passwordless root)
 
 ```sh
-#!/bin/sh
+# Run once via serial
 passwd -d root
-passwd -d kali 2>/dev/null || true
 sed -i '/PermitRootLogin/d' /etc/ssh/sshd_config
 sed -i '/PermitEmptyPasswords/d' /etc/ssh/sshd_config
 echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
 echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config
-grep -E "PermitRoot|PermitEmpty" /etc/ssh/sshd_config
 rc-service sshd restart
-echo "SSH_FIXED"
 ```
 
-**Deploy via serial:**
-```
-python run_fix.py fix_ssh.sh 30
-```
-
-**Verify SSH works:**
-```
-ssh root@172.16.42.1
-# or over WiFi:
-ssh root@192.168.1.190
-```
-
-> **Why `sed -i '/PermitRootLogin/d'` instead of `sed -i 's/.../.../'`?**  
-> Alpine's default `sshd_config` has the line commented out as `#PermitRootLogin prohibit-password`.  
-> A simple substitution only matches the uncommented form. Deleting all matching lines first (commented or not) and then appending the desired value is the reliable approach.
+Then: `ssh root@172.16.42.1` (USB) or `ssh root@<device-wifi-ip>`
 
 ---
 
-## 3. WiFi Monitor Mode (without dropping the WiFi connection)
+## WiFi Monitor Mode
 
-The MT7921 supports concurrent interface modes. You can add a virtual `mon0` monitor interface while `wlan0` stays connected to your AP.
-
-### Verify concurrent mode support
+The MT7921 supports running `wlan0` in managed mode (connected to your AP) and `mon0` in monitor mode **at the same time**.
 
 ```sh
-iw phy phy0 info | grep -A10 "Supported interface modes"
-```
-
-Expected output includes both `managed` and `monitor`.
-
-### Enable monitor mode (one-shot)
-
-```sh
-# Install iw if not present
 apk add iw
-
-# Create monitor interface (keeps wlan0 connected)
 iw phy phy0 interface add mon0 type monitor
 ip link set mon0 up
-
-# Verify
-iw dev mon0 info
+iw dev  # shows both interfaces
 ```
 
-Output:
-```
-Interface mon0
-        ifindex 4
-        wdev 0x2
-        addr 00:0c:43:26:60:00
-        type monitor
-        wiphy 0
-        txpower 20.00 dBm
-```
-
----
-
-## 4. Make Monitor Mode Persistent (OpenRC)
-
-postmarketOS uses OpenRC. Scripts in `/etc/local.d/*.start` are executed at boot by the `local` service.
-
-### `mon0_persist.sh`
+### Make it persistent across reboots
 
 ```sh
-#!/bin/sh
 printf '#!/bin/sh\niw phy phy0 interface add mon0 type monitor 2>/dev/null || true\nip link set mon0 up\n' \
     > /etc/local.d/mon0.start
 chmod 755 /etc/local.d/mon0.start
 rc-update add local default
-rc-service local start
-iw dev mon0 info
-echo PERSIST_OK
 ```
-
-**Deploy:**
-```
-python run_fix.py mon0_persist.sh 20
-```
-
-**Verify after reboot:**
-```sh
-iw dev
-# Should show both wlan0 (managed) and mon0 (monitor)
-```
-
-### Why this works
-
-| Mechanism | Detail |
-|-----------|--------|
-| `/etc/local.d/mon0.start` | Executed by OpenRC `local` service at every boot |
-| `2>/dev/null \|\| true` | Silently skips if `mon0` already exists (e.g., resumed from suspend) |
-| `rc-update add local default` | Ensures `local` service is in the `default` runlevel |
 
 ---
 
-## 5. Fix Duplicate Launcher UI
+## Hardware Status
 
-postmarketOS on the Echo Show 8 ships with two autostart entries that conflict:
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Display (LCD) | ✅ | Backlight control via sysfs, Panfrost GPU, Wayland/Phosh |
+| Touchscreen | ✅ | FocalTech FT5x06, `event1` |
+| WiFi (managed) | ✅ | MediaTek MT7921, connects to AP via NetworkManager |
+| WiFi (monitor mode) | ✅ | Concurrent with managed — `mon0` via `iw` |
+| WiFi (AP mode) | ✅ | Supported by driver |
+| Bluetooth | ✅ | `hci0` powered on, controller visible |
+| Audio playback | ✅ | `mt8183_athena` ALSA card, `pcmC0D0p` |
+| Microphone | ⚠️ | Capture devices present, not fully tested |
+| Camera (rear + front) | ⚠️ | ISP driver loaded (`mtk-camsv-isp`, `/dev/video0`), libcamera not tested |
+| Ambient light sensor | ✅ | TCS3400 (IIO device `iio:device0`) |
+| Accelerometer/Gyro | ❌ | No IIO device found |
+| GPU (3D) | ✅ | MediaTek DRM + Panfrost, renders Phosh/GTK4 |
+| USB (device mode) | ✅ | CDC-ACM serial + CDC-ECM network gadget |
+| eMMC storage | ✅ | `/dev/mmcblk0`, `mmcblk0p23` userdata |
+| Battery/charging | ❓ | No sysfs power_supply entries found |
 
-| Entry | File | Function |
-|-------|------|----------|
-| `echo-launcher` | `/home/user/.config/autostart/echo-launcher.desktop` | Full home screen with app grid + search bar (basic desktop view) |
-| `echo-taskbar` | `/home/user/.config/autostart/echo-taskbar.desktop` | Bottom bar that includes its own launcher popup — causes overlap |
-
-**Remove echo-taskbar (keep echo-launcher):**
-```sh
-rm /home/user/.config/autostart/echo-taskbar.desktop
-pkill -f echo-taskbar
-```
-
-**Verify:**
-```sh
-ls /home/user/.config/autostart/
-# echo-launcher.desktop  echo-osk-dismiss.desktop
-
-ps aux | grep echo-launcher | grep -v grep
-# Should show echo-launcher running, no echo-taskbar
-```
-
-The device will show the basic desktop view (wallpaper + app icons + search bar) on next login.
+→ Full details: [hardware-compatibility.md](hardware-compatibility.md)
 
 ---
 
-## Workflow Summary
+## Scripts in This Repo
 
-```
-Echo Show 8 (postmarketOS)
-        │
-        │ USB-C
-        │
-   Windows host
-        │
-        ├─ COM9 (CDC-ACM serial) ──► serial_cmd.py / run_fix.py
-        │                              Auto-login root shell
-        │
-        └─ 172.16.42.1 (CDC-ECM) ──► ssh root@172.16.42.1
-                                       After SSH fix applied
-```
-
-**Step order:**
-1. Plug in USB → COM9 appears automatically
-2. Run `fix_ssh.sh` via serial to unlock SSH
-3. Connect via SSH for interactive use
-4. Run `mon0_persist.sh` to enable persistent monitor mode
-5. Remove `echo-taskbar.desktop` to fix UI
+| Script | Purpose |
+|--------|---------|
+| `serial_cmd.py` | Send a single shell command over USB serial (COM9) |
+| `run_fix.py` | Send a multi-line `.sh` script over USB serial |
+| `fix_ssh.sh` | Unlock passwordless root SSH on the device |
+| `mon0_persist.sh` | Create persistent monitor mode via OpenRC |
 
 ---
 
-## References
+## Related
 
 - [postmarketOS wiki — Amazon Echo Show 8 (2nd gen)](https://wiki.postmarketos.org/wiki/Amazon_Echo_Show_8_(2nd_gen))
-- [saiyaku-athena flash tool](https://github.com/R0rt1z2/saiyaku)
-- [Alpine Linux OpenRC docs](https://wiki.alpinelinux.org/wiki/OpenRC)
-- [`iw` manual](https://wireless.wiki.kernel.org/en/users/documentation/iw)
-
----
-
-## Notes
-
-- The WiFi MAC address (`00:0c:43:26:60:00`) is shared between `wlan0` and `mon0` since they are virtual interfaces on the same physical radio.
-- Tested on postmarketOS edge (November 2024 build), Alpine Linux 3.21, kernel 6.x.
-- The `iw` package must be installed: `apk add iw`.
+- [saiyaku-athena — XDA Thread](https://xdaforums.com/t/unlock-root-twrp-unbrick-amazon-echo-show-8-2nd-gen-2021-athena.4804958/)
+- [postmarketOS official site](https://postmarketos.org/)
