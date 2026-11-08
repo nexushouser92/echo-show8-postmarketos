@@ -24,6 +24,8 @@ This repository documents the process of running postmarketOS on the Amazon Echo
 
 ### Flash postmarketOS
 
+Use the official [saiyaku-athena](https://xdaforums.com/t/unlock-root-twrp-unbrick-amazon-echo-show-8-2nd-gen-2021-athena.4804958/) tool to flash postmarketOS onto the device via MTK Meta mode.
+
 ### Connect via USB (Windows)
 
 Plug the device in via USB-C. It exposes a composite USB gadget:
@@ -61,50 +63,89 @@ s = out.decode(errors="replace")
 import re
 s = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", s)
 print(s.split("DONE" + tag)[0])
-```
 
 ```
+
+
+
+```bash
+
 python serial_cmd.py "uname -a"
+
 ```
+
+
 
 ### Enable SSH (passwordless root)
 
+
+
 ```sh
+
 # Run once via serial
+
 passwd -d root
+
 sed -i '/PermitRootLogin/d' /etc/ssh/sshd_config
+
 sed -i '/PermitEmptyPasswords/d' /etc/ssh/sshd_config
+
 echo "PermitRootLogin yes" >> /etc/ssh/sshd_config
+
 echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config
+
 rc-service sshd restart
+
 ```
+
+
 
 Then: `ssh root@172.16.42.1` (USB) or `ssh root@<device-wifi-ip>`
 
+
+
 ---
+
+
 
 ## WiFi Monitor Mode
 
+
+
 The MT7921 supports running `wlan0` in managed mode (connected to your AP) and `mon0` in monitor mode **at the same time**.
 
+
+
 ```sh
+
 apk add iw
+
 iw phy phy0 interface add mon0 type monitor
+
 ip link set mon0 up
+
 iw dev  # shows both interfaces
+
 ```
+
+
 
 ### Make it persistent across reboots
 
+
+
 ```sh
+
 printf '#!/bin/sh\niw phy phy0 interface add mon0 type monitor 2>/dev/null || true\nip link set mon0 up\n' \
+
     > /etc/local.d/mon0.start
+
 chmod 755 /etc/local.d/mon0.start
+
 rc-update add local default
+
 ```
-
 ---
-
 ## Hardware Status
 
 | Component | Status |
@@ -140,5 +181,5 @@ rc-update add local default
 ## Related
 
 - [postmarketOS wiki — Amazon Echo Show 8 (2nd gen)](https://wiki.postmarketos.org/wiki/Amazon_Echo_Show_8_(2nd_gen))
-- [saiyaku-athena — flash tool](https://github.com/R0rt1z2/saiyaku)
+- [saiyaku-athena — XDA Thread](https://xdaforums.com/t/unlock-root-twrp-unbrick-amazon-echo-show-8-2nd-gen-2021-athena.4804958/)
 - [postmarketOS official site](https://postmarketos.org/)
