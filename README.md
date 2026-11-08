@@ -24,8 +24,6 @@ This repository documents the process of running postmarketOS on the Amazon Echo
 
 ### Flash postmarketOS
 
-Use the official [saiyaku-athena](https://github.com/R0rt1z2/saiyaku) tool to flash postmarketOS onto the device via MTK Meta mode.
-
 ### Connect via USB (Windows)
 
 Plug the device in via USB-C. It exposes a composite USB gadget:
